@@ -1,4 +1,4 @@
-# DUSt3R
+![demo](assets/dust3r.jpg)
 
 Official implementation of `DUSt3R: Geometric 3D Vision Made Easy`  
 [[Project page](https://dust3r.europe.naverlabs.com/)], [[DUSt3R arxiv](https://arxiv.org/abs/2312.14132)]  
@@ -8,7 +8,14 @@ Official implementation of `DUSt3R: Geometric 3D Vision Made Easy`
 ![High level overview of DUSt3R capabilities](assets/dust3r_archi.jpg)
 
 ```bibtex
-@misc{wang2023dust3r,
+@inproceedings{dust3r_cvpr24,
+      title={DUSt3R: Geometric 3D Vision Made Easy}, 
+      author={Shuzhe Wang and Vincent Leroy and Yohann Cabon and Boris Chidlovskii and Jerome Revaud},
+      booktitle = {CVPR},
+      year = {2024}
+}
+
+@misc{dust3r_arxiv23,
       title={DUSt3R: Geometric 3D Vision Made Easy}, 
       author={Shuzhe Wang and Vincent Leroy and Yohann Cabon and Boris Chidlovskii and Jerome Revaud},
       year={2023},
@@ -20,18 +27,17 @@ Official implementation of `DUSt3R: Geometric 3D Vision Made Easy`
 
 ## Table of Contents
 
-- [DUSt3R](#dust3r)
-  - [Table of Contents](#table-of-contents)
-  - [License](#license)
-  - [Get Started](#get-started)
-    - [Installation](#installation)
-    - [Checkpoints](#checkpoints)
-    - [Interactive demo](#interactive-demo)
-    - [Interactive demo with docker](#interactive-demo-with-docker)
-  - [Usage](#usage)
-  - [Training](#training)
-    - [Demo](#demo)
-    - [Our Hyperparameters](#our-hyperparameters)
+- [Table of Contents](#table-of-contents)
+- [License](#license)
+- [Get Started](#get-started)
+  - [Installation](#installation)
+  - [Checkpoints](#checkpoints)
+  - [Interactive demo](#interactive-demo)
+  - [Interactive demo with docker](#interactive-demo-with-docker)
+- [Usage](#usage)
+- [Training](#training)
+  - [Demo](#demo)
+  - [Our Hyperparameters](#our-hyperparameters)
 
 ## License
 
@@ -136,6 +142,12 @@ Or if you want to run the demo without CUDA support, run the following command:
 cd docker
 bash run.sh --model-name="DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 ```
+
+By default, `demo.py` is lanched with the option `--local_network`.  
+Visit `http://localhost:7860/` to access the web UI (or replace `localhost` with the machine's name to access it from the network).  
+
+`run.sh` will launch docker-compose using either the [docker-compose-cuda.yml](docker/docker-compose-cuda.yml) or [docker-compose-cpu.ym](docker/docker-compose-cpu.yml) config file, then it starts the demo using [entrypoint.sh](docker/files/entrypoint.sh).
+
 
 ![demo](assets/demo.jpg)
 
@@ -260,34 +272,34 @@ torchrun --nproc_per_node=4 train.py \
     --model "AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='linear', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
     --train_criterion "ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)" \
     --test_criterion "Regr3D_ScaleShiftInv(L21, gt_scale=True)" \
-    --pretrained checkpoints/CroCo_V2_ViTLarge_BaseDecoder.pth \
+    --pretrained "checkpoints/CroCo_V2_ViTLarge_BaseDecoder.pth" \
     --lr 0.0001 --min_lr 1e-06 --warmup_epochs 1 --epochs 10 --batch_size 16 --accum_iter 1 \
     --save_freq 1 --keep_freq 5 --eval_freq 1 \
-    --output_dir checkpoints/dust3r_demo_224	  
+    --output_dir "checkpoints/dust3r_demo_224"	  
 
 # step 2 - train dust3r for 512 resolution
 torchrun --nproc_per_node=4 train.py \
     --train_dataset "1000 @ Co3d(split='train', ROOT='data/co3d_subset_processed', aug_crop=16, mask_bg='rand', resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)" \
-    --test_dataset="100 @ Co3d(split='test', ROOT='data/co3d_subset_processed', resolution=(512,384), seed=777)" \
-    --model="AsymmetricCroCo3DStereo(pos_embed='RoPE100', patch_embed_cls='ManyAR_PatchEmbed', img_size=(512, 512), head_type='linear', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
+    --test_dataset "100 @ Co3d(split='test', ROOT='data/co3d_subset_processed', resolution=(512,384), seed=777)" \
+    --model "AsymmetricCroCo3DStereo(pos_embed='RoPE100', patch_embed_cls='ManyAR_PatchEmbed', img_size=(512, 512), head_type='linear', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
     --train_criterion "ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)" \
     --test_criterion "Regr3D_ScaleShiftInv(L21, gt_scale=True)" \
-    --pretrained='checkpoints/dust3r_demo_224/checkpoint-best.pth' \
-    --lr=0.0001 --min_lr=1e-06 --warmup_epochs 1 --epochs 10 --batch_size 4 --accum_iter 4 \
+    --pretrained "checkpoints/dust3r_demo_224/checkpoint-best.pth" \
+    --lr 0.0001 --min_lr 1e-06 --warmup_epochs 1 --epochs 10 --batch_size 4 --accum_iter 4 \
     --save_freq 1 --keep_freq 5 --eval_freq 1 \
-    --output_dir checkpoints/dust3r_demo_512
+    --output_dir "checkpoints/dust3r_demo_512"
 
 # step 3 - train dust3r for 512 resolution with dpt
 torchrun --nproc_per_node=4 train.py \
     --train_dataset "1000 @ Co3d(split='train', ROOT='data/co3d_subset_processed', aug_crop=16, mask_bg='rand', resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)" \
-    --test_dataset="100 @ Co3d(split='test', ROOT='data/co3d_subset_processed', resolution=(512,384), seed=777)" \
-    --model="AsymmetricCroCo3DStereo(pos_embed='RoPE100', patch_embed_cls='ManyAR_PatchEmbed', img_size=(512, 512), head_type='dpt', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
+    --test_dataset "100 @ Co3d(split='test', ROOT='data/co3d_subset_processed', resolution=(512,384), seed=777)" \
+    --model "AsymmetricCroCo3DStereo(pos_embed='RoPE100', patch_embed_cls='ManyAR_PatchEmbed', img_size=(512, 512), head_type='dpt', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
     --train_criterion "ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)" \
     --test_criterion "Regr3D_ScaleShiftInv(L21, gt_scale=True)" \
-    --pretrained='checkpoints/dust3r_demo_512/checkpoint-best.pth' \
-    --lr=0.0001 --min_lr=1e-06 --warmup_epochs 1 --epochs 10 --batch_size 2 --accum_iter 8 \
+    --pretrained "checkpoints/dust3r_demo_512/checkpoint-best.pth" \
+    --lr 0.0001 --min_lr 1e-06 --warmup_epochs 1 --epochs 10 --batch_size 2 --accum_iter 8 \
     --save_freq 1 --keep_freq 5 --eval_freq 1 \
-    --output_dir checkpoints/dust3r_demo_512dpt
+    --output_dir "checkpoints/dust3r_demo_512dpt"
 
 ```
 
@@ -302,35 +314,35 @@ torchrun --nproc_per_node 4 train.py \
     --train_dataset=" + 100_000 @ Habitat512(1_000_000, split='train', aug_crop=16, resolution=224, transform=ColorJitter) + 100_000 @ BlendedMVS(split='train', aug_crop=16, resolution=224, transform=ColorJitter) + 100_000 @ MegaDepthDense(split='train', aug_crop=16, resolution=224, transform=ColorJitter) + 100_000 @ ARKitScenes(aug_crop=256, resolution=224, transform=ColorJitter) + 100_000 @ Co3d_v3(split='train', aug_crop=16, mask_bg='rand', resolution=224, transform=ColorJitter) + 100_000 @ StaticThings3D(aug_crop=256, mask_bg='rand', resolution=224, transform=ColorJitter) + 100_000 @ ScanNetpp(split='train', aug_crop=256, resolution=224, transform=ColorJitter) + 100_000 @ Waymo(aug_crop=128, resolution=224, transform=ColorJitter) " \
     --test_dataset=" Habitat512(1_000, split='val', resolution=224, seed=777) + 1_000 @ BlendedMVS(split='val', resolution=224, seed=777) + 1_000 @ MegaDepthDense(split='val', resolution=224, seed=777) + 1_000 @ Co3d_v3(split='test', mask_bg='rand', resolution=224, seed=777) " \
     --train_criterion="ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)" \
-    --test_criterion='Regr3D_ScaleShiftInv(L21, gt_scale=True)' \
+    --test_criterion="Regr3D_ScaleShiftInv(L21, gt_scale=True)" \
     --model="AsymmetricCroCo3DStereo(pos_embed='RoPE100', img_size=(224, 224), head_type='linear', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
     --pretrained="checkpoints/CroCo_V2_ViTLarge_BaseDecoder.pth" \
     --lr=0.0001 --min_lr=1e-06 --warmup_epochs=10 --epochs=100 --batch_size=16 --accum_iter=1 \
     --save_freq=5 --keep_freq=10 --eval_freq=1 \
-    --output_dir='checkpoints/dust3r_224'
+    --output_dir="checkpoints/dust3r_224"
 
 # 512 linear
 torchrun --nproc_per_node 8 train.py \
     --train_dataset=" + 10_000 @ Habitat512(1_000_000, split='train', aug_crop=16, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ BlendedMVS(split='train', aug_crop=16, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ MegaDepthDense(split='train', aug_crop=16, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ ARKitScenes(aug_crop=256, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ Co3d_v3(split='train', aug_crop=16, mask_bg='rand', resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ StaticThings3D(aug_crop=256, mask_bg='rand', resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ ScanNetpp(split='train', aug_crop=256, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ Waymo(aug_crop=128, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) " \
     --test_dataset=" Habitat512(1_000, split='val', resolution=(512,384), seed=777) + 1_000 @ BlendedMVS(split='val', resolution=(512,384), seed=777) + 1_000 @ MegaDepthDense(split='val', resolution=(512,336), seed=777) + 1_000 @ Co3d_v3(split='test', resolution=(512,384), seed=777) " \
     --train_criterion="ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)" \
-    --test_criterion='Regr3D_ScaleShiftInv(L21, gt_scale=True)' \
+    --test_criterion="Regr3D_ScaleShiftInv(L21, gt_scale=True)" \
     --model="AsymmetricCroCo3DStereo(pos_embed='RoPE100', patch_embed_cls='ManyAR_PatchEmbed', img_size=(512, 512), head_type='linear', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
-    --pretrained='checkpoints/dust3r_224/checkpoint-best.pth' \
+    --pretrained="checkpoints/dust3r_224/checkpoint-best.pth" \
     --lr=0.0001 --min_lr=1e-06 --warmup_epochs=20 --epochs=200 --batch_size=4 --accum_iter=2 \
     --save_freq=10 --keep_freq=10 --eval_freq=1 --print_freq=10 \
-    --output_dir='checkpoints/dust3r_512'
+    --output_dir="checkpoints/dust3r_512"
 
 # 512 dpt
 torchrun --nproc_per_node 8 train.py \
     --train_dataset=" + 10_000 @ Habitat512(1_000_000, split='train', aug_crop=16, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ BlendedMVS(split='train', aug_crop=16, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ MegaDepthDense(split='train', aug_crop=16, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ ARKitScenes(aug_crop=256, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ Co3d_v3(split='train', aug_crop=16, mask_bg='rand', resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ StaticThings3D(aug_crop=256, mask_bg='rand', resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ ScanNetpp(split='train', aug_crop=256, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) + 10_000 @ Waymo(aug_crop=128, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter) " \
     --test_dataset=" Habitat512(1_000, split='val', resolution=(512,384), seed=777) + 1_000 @ BlendedMVS(split='val', resolution=(512,384), seed=777) + 1_000 @ MegaDepthDense(split='val', resolution=(512,336), seed=777) + 1_000 @ Co3d_v3(split='test', resolution=(512,384), seed=777) " \
     --train_criterion="ConfLoss(Regr3D(L21, norm_mode='avg_dis'), alpha=0.2)" \
-    --test_criterion='Regr3D_ScaleShiftInv(L21, gt_scale=True)' \
+    --test_criterion="Regr3D_ScaleShiftInv(L21, gt_scale=True)" \
     --model="AsymmetricCroCo3DStereo(pos_embed='RoPE100', patch_embed_cls='ManyAR_PatchEmbed', img_size=(512, 512), head_type='dpt', output_mode='pts3d', depth_mode=('exp', -inf, inf), conf_mode=('exp', 1, inf), enc_embed_dim=1024, enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12)" \
-    --pretrained='checkpoints/dust3r_512/checkpoint-best.pth' \
+    --pretrained="checkpoints/dust3r_512/checkpoint-best.pth" \
     --lr=0.0001 --min_lr=1e-06 --warmup_epochs=15 --epochs=90 --batch_size=2 --accum_iter=4 \
     --save_freq=5 --keep_freq=10 --eval_freq=1 --print_freq=10 \
-    --output_dir='checkpoints/dust3r_512dpt'
+    --output_dir="checkpoints/dust3r_512dpt"
 
 ```
