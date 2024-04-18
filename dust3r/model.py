@@ -6,6 +6,9 @@
 # --------------------------------------------------------
 from copy import deepcopy
 import torch
+import os
+from packaging import version
+import huggingface_hub
 
 from .utils.misc import fill_default_args, freeze_all_params, is_symmetrized, interleave, transpose_to_landscape
 from .heads import head_factory
@@ -13,10 +16,38 @@ from dust3r.patch_embed import get_patch_embed
 
 import dust3r.utils.path_to_croco  # noqa: F401
 from models.croco import CroCoNet  # noqa
+
 inf = float('inf')
 
+hf_version_number = huggingface_hub.__version__
+assert version.parse(hf_version_number) >= version.parse("0.22.0"), "Outdated huggingface_hub version, please reinstall requirements.txt"
 
-class AsymmetricCroCo3DStereo (CroCoNet):
+def load_model(model_path, device, verbose=True):
+    if verbose:
+        print('... loading model from', model_path)
+    ckpt = torch.load(model_path, map_location='cpu')
+    args = ckpt['args'].model.replace("ManyAR_PatchEmbed", "PatchEmbedDust3R")
+    if 'landscape_only' not in args:
+        args = args[:-1] + ', landscape_only=False)'
+    else:
+        args = args.replace(" ", "").replace('landscape_only=True', 'landscape_only=False')
+    assert "landscape_only=False" in args
+    if verbose:
+        print(f"instantiating : {args}")
+    net = eval(args)
+    s = net.load_state_dict(ckpt['model'], strict=False)
+    if verbose:
+        print(s)
+    return net.to(device)
+
+
+class AsymmetricCroCo3DStereo (
+    CroCoNet,
+    huggingface_hub.PyTorchModelHubMixin,
+    library_name="dust3r",
+    repo_url="https://github.com/naver/dust3r",
+    tags=["image-to-3d"],
+):
     """ Two siamese encoders, followed by two decoders.
     The goal is to output 3d points directly, both images in view1's frame
     (hence the asymmetry).   
@@ -39,6 +70,13 @@ class AsymmetricCroCo3DStereo (CroCoNet):
         self.dec_blocks2 = deepcopy(self.dec_blocks)
         self.set_downstream_head(output_mode, head_type, landscape_only, depth_mode, conf_mode, **croco_kwargs)
         self.set_freeze(freeze)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kw):
+        if os.path.isfile(pretrained_model_name_or_path):
+            return load_model(pretrained_model_name_or_path, device='cpu')
+        else:
+            return super(AsymmetricCroCo3DStereo, cls).from_pretrained(pretrained_model_name_or_path, **kw)
 
     def _set_patch_embed(self, img_size=224, patch_size=16, enc_embed_dim=768):
         self.patch_embed = get_patch_embed(self.patch_embed_cls, img_size, patch_size, enc_embed_dim)
