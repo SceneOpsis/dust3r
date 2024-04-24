@@ -10,7 +10,8 @@ sys.path.append("../")
 import copy
 from matplotlib import pyplot as plt
 
-from dust3r.inference import inference, load_model
+from dust3r.inference import inference
+from dust3r.model import AsymmetricCroCo3DStereo
 from dust3r.image_pairs import make_pairs
 from dust3r.utils.image import load_images
 from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
@@ -28,6 +29,11 @@ batch_size = 1
 schedule = "linear"  # "cosine" or "linear"
 device = "cuda"
 weights = "../checkpoints/checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
+
+
+def load_model(weights, device):
+    return AsymmetricCroCo3DStereo.from_pretrained(weights).to(args.device)
+
 
 # %%
 # load model
