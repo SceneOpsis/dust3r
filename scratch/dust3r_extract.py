@@ -20,7 +20,7 @@ from dust3r.utils.device import to_numpy
 import torch
 from tqdm import tqdm
 
-import scratch.read_write_model as CM
+import sceneopsis.read_write_model as CM
 
 min_conf_thr = 3
 image_size = 512

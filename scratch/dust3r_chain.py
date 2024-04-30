@@ -28,8 +28,7 @@ from dust3r.utils.device import to_numpy
 import torch
 from tqdm import tqdm
 
-import scratch.read_write_model as CM
-from scratch import visualize_scene
+from sceneopsis.utils import visualize_scene
 
 min_conf_thr = 3
 image_size = 512
@@ -37,7 +36,7 @@ niter = 300
 batch_size = 16
 schedule = "linear"  # "cosine" or "linear"
 device = "cuda"
-weights = "../checkpoints/checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
+weights = "../checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 
 
 def load_model(weights, device):
@@ -266,4 +265,6 @@ ret = visualize_poses(absolute_poses, focals, point_cloud, color_imgs, server_po
 # Give them to colmap as initial positions.
 # Get Depth maps and store them for use with 3dgs.
 
+# %%
+color_imgs[0].max()
 # %%

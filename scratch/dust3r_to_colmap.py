@@ -20,7 +20,7 @@ from dust3r.utils.device import to_numpy
 import torch
 from tqdm import tqdm
 
-import scratch.read_write_model as CM
+import sceneopsis.read_write_model as CM
 
 min_conf_thr = 3
 image_size = 512
@@ -148,7 +148,7 @@ os.makedirs(sparse_folder, exist_ok=True)
 image_folder = os.path.join(output_folder, "images")
 os.makedirs(image_folder, exist_ok=True)
 
-for idx, img in enumerate(scene.imgs):
+for idx, img in enumerate(scene. R, T,imgs):
     cv2.imwrite(
         os.path.join(image_folder, f"{idx:05d}.png"),
         (img[..., ::-1] * 255).astype(np.uint8),
