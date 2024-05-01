@@ -91,7 +91,8 @@ def process_pair(view1, view2, pred1, pred2, min_conf_thr=3):
     return pose, focal, pp, conf
 
 
-def compute_poses(output):
+@torch.no_grad()
+def compute_poses(output, min_conf_thr):
 
     pairs = len(output["view1"]["idx"])
     relative_poses = []
@@ -103,20 +104,12 @@ def compute_poses(output):
     # first camera is at origin
     absolute_poses.append(np.eye(4))
 
-    point_cloud = []
-    # first point cloud is in world origin
-    point_cloud.append(output["pred1"]["pts3d"][0])
-
-    color_imgs = []
-    # first image is the first view
-    color_imgs.append(rgb(output["view1"]["img"][0]))
-
     for p_id in range(pairs):
 
         view1, view2, pred1, pred2 = get_pair_output(output, p_id)
-        pose, focal, pp, conf = process_pair(view1, view2, pred1, pred2)
+        pose, focal, pp, conf = process_pair(view1, view2, pred1, pred2, min_conf_thr)
         print(f"{focal=}, {pp=}, {conf=}")
-        print(pose)
+        print(pose, type(pose))
 
         relative_poses.append(pose)
         focals.append(focal)
@@ -129,36 +122,51 @@ def compute_poses(output):
         print(absolute_poses[-1])
 
         cam1_world_pts3d = geotrf(cam1_to_world, pred2["pts3d_in_other_view"][0])
-        point_cloud.append(cam1_world_pts3d)
-
-        color_imgs.append(rgb(view2["img"][0]))
 
     # last cam focal and pp are not caltulated. Lets use the second to last.
     focals.append(focals[-1])
     pps.append(pps[-1])
 
-    return relative_poses, focals, pps, absolute_poses, point_cloud, color_imgs
+    return relative_poses, focals, pps, absolute_poses
 
 
 def dust3r_preproc(
-    in_folder: str, out_folder: str, *, vis: bool = False, colmap_bin: bool = False
+    in_folder: str,
+    out_folder: str,
+    *,
+    vis: bool = False,
+    colmap_bin: bool = False,
+    raw_res: bool = False,
 ):
 
-    image_size = 512
+    network_input_size = [288, 512]
     batch_size = 16
     device = "cuda"
     weights = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 
     print("Loading model...")
     model = load_model(weights, device)
+    model.eval()
 
     print("Loading images...")
     exp_name = "undistorted/images"
     filelist = sorted(glob.glob(f"{in_folder}/*.png"))
     print(filelist)
 
+    # If raw_res is True, we will keep the resolution of dust3r (which is image_size).
+    # Otherwise, we will rescale all the output to original resolution.
+    if not raw_res:
+        # Get the original res. Assuming all input frames are the same resolution
+        original_res = cv2.imread(filelist[0]).shape[:2]
+        print(f"Original resolution: {original_res}")
+        # make sure aspect ratio is the same.
+        assert (
+            network_input_size[0] / network_input_size[1]
+            == original_res[0] / original_res[1]
+        ), "Aspect ratio mismatch"
+
     # TODO This is keeping all images in memory. Make it smarter.
-    imgs = load_images(filelist, size=image_size)
+    imgs = load_images(filelist, size=network_input_size[1])
     assert len(imgs) > 1, "Need at least 2 images"
     # we need a sliding window of 1 (0, 1), (1, 2), (2, 3), ...
     pairsid = [(i, i + 1) for i in range(len(imgs) - 1)]
@@ -174,51 +182,84 @@ def dust3r_preproc(
     )
 
     print("Compute poses...")
-    relative_poses, focals, pps, absolute_poses, point_cloud, color_imgs = (
-        compute_poses(output)
+    min_conf_thr = 3
+    print(f"{min_conf_thr=}")
+    relative_poses, focals, pps, absolute_poses = compute_poses(output, min_conf_thr)
+
+    # Gather pointmaps
+    pointmaps = output["pred1"]["pts3d"]
+    last_pointmap = last_pair_output["pred1"]["pts3d"]
+    pointmaps = torch.cat([pointmaps, last_pointmap], dim=0)
+    print(
+        "POINTMAPS: ",
+        pointmaps.shape,
+        pointmaps.dtype,
+        pointmaps.min(),
+        pointmaps.max(),
     )
 
-    # Gather depths
-    depths = output["pred1"]["pts3d"][..., 2]
-    last_depth = last_pair_output["pred1"]["pts3d"][..., 2]
-    # merge the last depthmap
-    depths = torch.cat([depths, last_depth], dim=0)
-    print("DEPTHS: ", depths.shape, depths.dtype, depths.min(), depths.max())
+    # Gather confidence maps
+    confmaps = output["pred1"]["conf"]
+    last_conf = last_pair_output["pred1"]["conf"]
+    confmaps = torch.cat([confmaps, last_conf], dim=0)
+    print("CONFMAPS: ", confmaps.shape, confmaps.dtype, confmaps.min(), confmaps.max())
+
+    # Gather color images (this is only for visualization and sample points3d file)
+    color_imgs = torch.from_numpy(rgb(output["view1"]["img"]))
+    last_color_img = torch.from_numpy(rgb(last_pair_output["view1"]["img"]))
+    color_imgs = torch.cat([color_imgs, last_color_img], dim=0)
 
     # Prepare out_folder structure
-    depth_out = os.path.join(out_folder, "depth")
-    os.makedirs(depth_out, exist_ok=True)
+    pointmaps_out = os.path.join(out_folder, "pointmaps")
+    os.makedirs(pointmaps_out, exist_ok=True)
     colmap_out = os.path.join(out_folder, "sparse", "0")
     os.makedirs(colmap_out, exist_ok=True)
     images_out = os.path.join(out_folder, "images")
     os.makedirs(images_out, exist_ok=True)
 
-    # Save depth
-    print("Saving depths...")
-    for i, d in enumerate(depths):
+    # Save dust3r output
+    print("Saving pointmaps and confmaps...")
+    # NOTE: Maybe resize to original resolution if not raw_res?
+    for i, (d, c) in enumerate(zip(pointmaps, confmaps)):
         d = d.cpu().numpy()
-        np.save(os.path.join(depth_out, f"{i:05d}.npy"), d)
+        c = c.cpu().numpy()
+        np.save(os.path.join(pointmaps_out, f"pm_{i:05d}.npy"), d)
+        np.save(os.path.join(pointmaps_out, f"conf_{i:05d}.npy"), c)
 
     # Save color
     print("Saving color images...")
-    for idx, img in enumerate(imgs):
-        assert img["idx"] == idx, "Image idx mismatch"
-        c = rgb(img["img"][0])
-        cv2.imwrite(
-            os.path.join(images_out, f"{idx:05d}.png"),
-            (c[..., ::-1] * 255).astype(np.uint8),
-        )
+    if raw_res:
+        for idx, img in enumerate(imgs):
+            assert img["idx"] == idx, "Image idx mismatch"
+            c = rgb(img["img"][0])
+            cv2.imwrite(
+                os.path.join(images_out, f"{idx:05d}.png"),
+                (c[..., ::-1] * 255).astype(np.uint8),
+            )
+    else:  # just copy the originals
+        import shutil
 
-    height, width = imgs[0]["true_shape"].flatten()
+        for idx, f in enumerate(filelist):
+            shutil.copy(f, os.path.join(images_out, f"{idx:05d}.png"))
 
     print("Creating colmap cameras file...")
     # This is a single camera. Following InstantSplat we get the mean focal length
     f = np.mean(focals)
     pp = pps[0]  # all pps are the same (W/2, H/2)
+    height, width = imgs[0]["true_shape"].flatten()
+
+    if not raw_res:
+        ratio = original_res[0] / network_input_size[0]
+        f = f * ratio
+        pp = np.array(pp) * ratio
+        height, width = original_res
+
     print(f"Camera params: {f=}, {pp=}, {height=}, {width=}")
 
-    cam_model = "PINHOLE"
-    # params are f, cx ,cy
+    cam_model = "OPENCV"
+    # params computed are f, cx ,cy
+    # but we need opencv so params will be
+    # fx, fy, cx, cy, k1, k2, p1, p2
     # Modify camera intrinsics to follow a different convention.
     # Coordinates of the center of the top-left pixels are by default:
     # - (0.5, 0.5) in Colmap
@@ -230,7 +271,7 @@ def dust3r_preproc(
             model=cam_model,
             width=width,
             height=height,
-            params=[f, f, pp[0] + 0.5, pp[1] + 0.5],
+            params=[f, f, pp[0] + 0.5, pp[1] + 0.5, 0.0, 0.0, 0.0, 0.0],
         )
     }
 
@@ -242,17 +283,9 @@ def dust3r_preproc(
     # Create points3D.txt
     print("Creating colmap points3D file...")
     # just store the pointcloud of the first frame for reference
-    pts = to_numpy(point_cloud[0]).reshape(-1, 3)
-    col = (color_imgs[0].reshape(-1, 3) * 255).astype(np.uint8)
 
-    # 3D pointcloud from depthmap, poses and intrinsics
-    # pts3d = to_numpy(scene.get_pts3d())
-    # scene.min_conf_thr = float(scene.conf_trf(torch.tensor(min_conf_thr)))
-    # mask = to_numpy(scene.get_masks())
-
-    # pts = np.concatenate([p[m] for p, m in zip(pts3d, mask)])
-    # col = np.concatenate([p[m] for p, m in zip(imgs, mask)])
-    # col = (col * 255).clip(0, 255).astype(np.uint8)
+    pts = to_numpy(pointmaps[0]).reshape(-1, 3)
+    col = (to_numpy(color_imgs[0]).reshape(-1, 3) * 255).astype(np.uint8)
 
     points3d = {}
     for idx, (pt, c) in tqdm(
@@ -297,9 +330,26 @@ def dust3r_preproc(
         CM.write_images_text(images, os.path.join(colmap_out, "images.txt"))
 
     if vis:
-        visualize_poses(
-            absolute_poses, focals, point_cloud, color_imgs, server_port=7860
-        )
+
+        from sceneopsis.utils import get_intrinsics, clean_pointcloud
+
+        K = get_intrinsics(f, pp)
+        new_confmaps = clean_pointcloud(absolute_poses, K, pointmaps, confmaps)
+        point_cloud = []
+        colors = []
+        i = 0
+        for cam, points, col, conf in zip(
+            absolute_poses, pointmaps, color_imgs, new_confmaps
+        ):
+            mask = conf > min_conf_thr
+            print(f"{i} ==> mask: {mask.sum()}")
+            i += 1
+            pc = points[mask].cpu().numpy()
+            pc_world = geotrf(cam, pc)
+            point_cloud.append(pc_world)
+            colors.append(col[mask].cpu().numpy())
+
+        visualize_poses(absolute_poses, focals, point_cloud, colors, server_port=7860)
 
 
 if __name__ == "__main__":

@@ -264,3 +264,74 @@ def trimesh_cameras(
     print("(exporting 3D scene to", outfile, ")")
     scene.export(file_obj=outfile)
     return outfile
+
+
+from dust3r.utils.geometry import inv, geotrf
+from typing import List
+
+
+def get_intrinsics(f: float, pp: np.array, device: torch.device = "cpu"):
+    K = torch.zeros((3, 3), device=device)
+    K[0, 0] = K[1, 1] = f
+    K[:2, 2] = torch.from_numpy(pp)
+    K[2, 2] = 1
+    return K
+
+
+@torch.no_grad()
+def clean_pointcloud(
+    cam2world_poses, K, pointmaps, confmaps, tol=0.001, max_bad_conf=0
+):
+    """
+    Adapted from the dust3r clear_pointcloud method:
+
+    Method:
+    1) express all 3d points in each camera coordinate frame
+    2) if they're in front of a depthmap --> then lower their confidence
+    """
+    assert 0 <= tol < 1
+
+    n_imgs = len(cam2world_poses)
+    H, W = pointmaps.shape[1:3]
+
+    print(f"{n_imgs=}, {H=}, {W=}, \n{K=}")
+
+    if isinstance(cam2world_poses, list):
+        cam2world_poses = np.stack(cam2world_poses, axis=0)
+        cam2world_poses = torch.from_numpy(cam2world_poses)
+
+    cams = inv(cam2world_poses)
+    depthmaps = pointmaps[:, :, :, 2].detach().clone()
+
+    print(f"{depthmaps.shape=} {cams.shape=}")
+
+    res_confmaps = confmaps.detach().clone()
+
+    for i, pts3d in enumerate(pointmaps):
+        for j in range(n_imgs):
+            if i == j:
+                continue
+
+            # project 3dpts in other view
+            proj = geotrf(cams[j] @ cam2world_poses[i], pts3d.reshape(-1, 3)).reshape(
+                H, W, 3
+            )
+            proj_depth = proj[:, :, 2]
+            u, v = geotrf(K, proj, norm=1, ncol=2).round().long().unbind(-1)
+
+            # check which points are actually in the visible cone
+            msk_i = (proj_depth > 0) & (0 <= u) & (u < W) & (0 <= v) & (v < H)
+            msk_j = v[msk_i], u[msk_i]
+
+            # find bad points = those in front but less confident
+            bad_points = (proj_depth[msk_i] < (1 - tol) * depthmaps[j][msk_j]) & (
+                res_confmaps[i][msk_i] < res_confmaps[j][msk_j]
+            )
+
+            bad_msk_i = msk_i.clone()
+            bad_msk_i[msk_i] = bad_points
+            res_confmaps[i][bad_msk_i] = res_confmaps[i][bad_msk_i].clip_(
+                max=max_bad_conf
+            )
+
+    return res_confmaps

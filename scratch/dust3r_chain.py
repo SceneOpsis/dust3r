@@ -165,7 +165,7 @@ model = load_model(weights, device)
 # %%
 
 exp_name = "undistorted/images"
-filelist = sorted(glob.glob(f"../res/{exp_name}/*.png"))[:4]
+filelist = sorted(glob.glob(f"../res/initial_tests/{exp_name}/*.png"))[:4]
 print(filelist)
 
 # %%
