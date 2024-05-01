@@ -1,11 +1,3 @@
-#
-# Input: A folder with the frames from a video (sequence).
-# Tasks:
-# 1. Process the video frames using dust3r to get Depth, Conf Maps, and Camera Parameters (intrinsic and extrinsic).
-# 2. convert camera Params to colmap format and
-# 3. Save the output a new folder.
-
-import sys
 import cv2
 import numpy as np
 import glob
@@ -23,6 +15,9 @@ from dust3r.utils.device import to_numpy
 
 import sceneopsis.read_write_model as CM
 from sceneopsis.utils import visualize_poses
+from sceneopsis.utils import get_intrinsics, clean_pointcloud
+
+from pathlib import Path
 
 
 def load_model(weights, device):
@@ -130,20 +125,20 @@ def compute_poses(output, min_conf_thr):
     return relative_poses, focals, pps, absolute_poses
 
 
-def dust3r_preproc(
+def preproc(
     in_folder: str,
     out_folder: str,
     *,
     vis: bool = False,
     colmap_bin: bool = False,
     raw_res: bool = False,
-    conf_thr=3,
+    conf_thr: float = 3,
+    weights: str = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
 ):
 
     network_input_size = [288, 512]
-    batch_size = 16
+    batch_size = 8
     device = "cuda"
-    weights = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 
     print("Loading model...")
     model = load_model(weights, device)
@@ -343,9 +338,7 @@ def dust3r_preproc(
 
     if vis:
 
-        from sceneopsis.utils import get_intrinsics, clean_pointcloud
-
-        K = get_intrinsics(raw_focal, raw_principal_point)
+        K = get_intrinsics([raw_focal, raw_focal], raw_principal_point)
         new_confmaps = clean_pointcloud(absolute_poses, K, pointmaps, confmaps)
         point_cloud = []
         colors = []
@@ -364,5 +357,148 @@ def dust3r_preproc(
         visualize_poses(absolute_poses, focals, point_cloud, colors, server_port=7860)
 
 
+def cleanup(
+    colmap_dir: str,
+    *,
+    conf_thr: float = 3,
+    vis: bool = False,
+):
+    # Load colmap poses and dust3r output
+    model_path = Path(colmap_dir) / "sparse" / "0"
+    images_path = Path(colmap_dir) / "images"
+    pointmaps_path = Path(colmap_dir) / "pointmaps"
+    # make sure folders exist
+    assert all(
+        [model_path.exists(), images_path.exists(), pointmaps_path.exists()]
+    ), "Colmap folder not found or missing files"
+
+    colmap_cameras, colmap_images, _ = CM.read_model(model_path)
+
+    print(f"{len(colmap_images)=}, {len(colmap_cameras)=}")
+
+    print("Images ", colmap_images[0])
+    print("Camera ", colmap_cameras[0])
+
+    # load pointmaps and confmaps
+    file_indices = list(range(len(colmap_images)))
+    filelist = [colmap_images[i].name for i in file_indices]
+    print(f"{filelist=}")
+
+    pointmaps = []
+    confmaps = []
+    frames = []
+    for f in tqdm(filelist, desc="Loading images, pointmaps and confmaps"):
+        fname = Path(f).stem
+        pm = np.load(pointmaps_path / f"pm_{fname}.npy")
+        conf = np.load(pointmaps_path / f"conf_{fname}.npy")
+        img = cv2.imread((images_path / f).as_posix())
+
+        pointmaps.append(pm)
+        confmaps.append(conf)
+        frames.append(img)
+
+    # load poses
+    cam2world_poses = []
+    for i in file_indices:
+        qvec = colmap_images[i].qvec
+        tvec = colmap_images[i].tvec
+        R = CM.qvec2rotmat(qvec)
+        cam2world_poses.append(np.r_[np.c_[R, tvec], [(0, 0, 0, 1)]])
+
+    # scale camera intrinsics to dust3r resolution
+    image_size = frames[0].shape[:2]
+    pointmaps_size = pointmaps[0].shape[:2]
+    calib_size = [colmap_cameras[0].height, colmap_cameras[0].width]
+
+    assert (
+        image_size[0] / image_size[1]
+        == calib_size[0] / calib_size[1]
+        == pointmaps_size[0] / pointmaps_size[1]
+    ), "Aspect ratio mismatch"
+
+    scale = pointmaps_size[0] / calib_size[0]
+    print(f"Scaling intrinsics by {scale}")
+
+    # Modify camera intrinsics to follow a different convention.
+    # Coordinates of the center of the top-left pixels are by default:
+    # - (0.5, 0.5) in Colmap
+    # - (0,0) in OpenCV
+    pp = (np.array(colmap_cameras[0].params[2:4]) - 0.5) * scale
+    focal = np.array(colmap_cameras[0].params[0:2]) * scale
+
+    print(f"Scaled Intrinsics: {focal=}, {pp=}")
+
+    # NOTE undistort pointmaps and confmaps ???
+
+    # Scale images to pointmap size
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+    frames = [
+        cv2.resize(img, tuple(pointmaps_size[::-1]), interpolation=interp)
+        for img in tqdm(frames, desc="Resizing images")
+    ]
+
+    # apply clean_pointcloud
+    K = get_intrinsics(focal, pp)
+    new_confmaps = clean_pointcloud(cam2world_poses, K, pointmaps, confmaps)
+
+    point_cloud = []
+    colors = []
+    i = 0
+    for cam, points, col, conf in zip(cam2world_poses, pointmaps, frames, new_confmaps):
+        mask = conf > conf_thr
+        print(f"{i} ==> mask: {mask.sum()}")
+        i += 1
+        pc = points[mask]
+        pc_world = geotrf(cam, pc)
+        point_cloud.append(pc_world)
+        colors.append(col[mask])
+
+    # save new pointcloud in points3D.txt
+
+    # Create points3D.txt
+    print("Creating colmap points3D file...")
+    # just store the pointcloud of the first frame for reference
+    pts = np.vstack(point_cloud)
+    col = (np.vstack(colors) * 255).astype(np.uint8)
+
+    points3d = {}
+    for idx, (pt, c) in tqdm(
+        enumerate(zip(pts, col)), total=len(pts), desc="Creating points3D"
+    ):
+        points3d[idx] = CM.Point3D(
+            id=idx,
+            xyz=pt,
+            rgb=c,
+            error=1.0,
+            image_ids=np.array([]),
+            point2D_idxs=np.array([]),
+        )
+
+    colmap_bin = Path(model_path / "images.bin").exists()
+    if colmap_bin:
+        CM.write_points3D_binary(points3d, model_path / "points3D.bin")
+    else:
+        CM.write_points3D_text(points3d, model_path / "points3D.txt")
+
+    if vis:
+        focals = np.repeat(np.array(focal)[np.newaxis, :], len(cam2world_poses), axis=0)
+        visualize_poses(cam2world_poses, focals, point_cloud, colors, server_port=7860)
+
+
 if __name__ == "__main__":
-    run(dust3r_preproc)
+    run(preproc, cleanup, description="Dust3r (pre)processing scripts")
+    # TODOs
+    # Create script that loads colmap poses and dust3r output and runs clean_pointcloud
+    #     - Refined poses and intrinsics should be considered (i.e undistort pointmaps?)
+    #     - Save point cloud in new points3D.txt file --> use it as initial population for 3dgs.
+
+
+# %%
+import numpy as np
+
+b = 20
+a = [1, 2]
+
+f = np.array([a])[::new, :]
+
+# %%

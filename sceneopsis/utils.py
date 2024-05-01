@@ -270,9 +270,10 @@ from dust3r.utils.geometry import inv, geotrf
 from typing import List
 
 
-def get_intrinsics(f: float, pp: np.array, device: torch.device = "cpu"):
+def get_intrinsics(focals: np.array, pp: np.array, device: torch.device = "cpu"):
     K = torch.zeros((3, 3), device=device)
-    K[0, 0] = K[1, 1] = f
+    K[0, 0] = focals[0]
+    K[1, 1] = focals[1]
     K[:2, 2] = torch.from_numpy(pp)
     K[2, 2] = 1
     return K
@@ -292,6 +293,15 @@ def clean_pointcloud(
     assert 0 <= tol < 1
 
     n_imgs = len(cam2world_poses)
+
+    if isinstance(pointmaps, list):
+        pointmaps = np.stack(pointmaps, axis=0)
+        pointmaps = torch.from_numpy(pointmaps)
+
+    if isinstance(confmaps, list):
+        confmaps = np.stack(confmaps, axis=0)
+        confmaps = torch.from_numpy(confmaps)
+
     H, W = pointmaps.shape[1:3]
 
     print(f"{n_imgs=}, {H=}, {W=}, \n{K=}")
