@@ -137,6 +137,7 @@ def dust3r_preproc(
     vis: bool = False,
     colmap_bin: bool = False,
     raw_res: bool = False,
+    conf_thr=3,
 ):
 
     network_input_size = [288, 512]
@@ -182,9 +183,7 @@ def dust3r_preproc(
     )
 
     print("Compute poses...")
-    min_conf_thr = 3
-    print(f"{min_conf_thr=}")
-    relative_poses, focals, pps, absolute_poses = compute_poses(output, min_conf_thr)
+    relative_poses, focals, pps, absolute_poses = compute_poses(output, conf_thr)
 
     # Gather pointmaps
     pointmaps = output["pred1"]["pts3d"]
@@ -244,17 +243,21 @@ def dust3r_preproc(
 
     print("Creating colmap cameras file...")
     # This is a single camera. Following InstantSplat we get the mean focal length
-    f = np.mean(focals)
-    pp = pps[0]  # all pps are the same (W/2, H/2)
-    height, width = imgs[0]["true_shape"].flatten()
+    raw_focal = np.mean(focals)
+    raw_principal_point = pps[0]  # all pps are the same (W/2, H/2)
+    raw_height, raw_width = imgs[0]["true_shape"].flatten()
 
     if not raw_res:
         ratio = original_res[0] / network_input_size[0]
-        f = f * ratio
-        pp = np.array(pp) * ratio
+        focal = raw_focal * ratio
+        principal_point = np.array(raw_principal_point) * ratio
         height, width = original_res
+    else:
+        focal = raw_focal
+        principal_point = raw_principal_point
+        height, width = raw_height, raw_width
 
-    print(f"Camera params: {f=}, {pp=}, {height=}, {width=}")
+    print(f"Camera params: {focal=}, {principal_point=}, {height=}, {width=}")
 
     cam_model = "OPENCV"
     # params computed are f, cx ,cy
@@ -271,7 +274,16 @@ def dust3r_preproc(
             model=cam_model,
             width=width,
             height=height,
-            params=[f, f, pp[0] + 0.5, pp[1] + 0.5, 0.0, 0.0, 0.0, 0.0],
+            params=[
+                focal,
+                focal,
+                principal_point[0] + 0.5,
+                principal_point[1] + 0.5,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
         )
     }
 
@@ -333,7 +345,7 @@ def dust3r_preproc(
 
         from sceneopsis.utils import get_intrinsics, clean_pointcloud
 
-        K = get_intrinsics(f, pp)
+        K = get_intrinsics(raw_focal, raw_principal_point)
         new_confmaps = clean_pointcloud(absolute_poses, K, pointmaps, confmaps)
         point_cloud = []
         colors = []
@@ -341,7 +353,7 @@ def dust3r_preproc(
         for cam, points, col, conf in zip(
             absolute_poses, pointmaps, color_imgs, new_confmaps
         ):
-            mask = conf > min_conf_thr
+            mask = conf > conf_thr
             print(f"{i} ==> mask: {mask.sum()}")
             i += 1
             pc = points[mask].cpu().numpy()
