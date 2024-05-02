@@ -1,6 +1,8 @@
 from dust3r.utils.device import to_numpy
 from dust3r.utils.image import rgb
+from dust3r.model import AsymmetricCroCo3DStereo
 from dust3r.viz import add_scene_cam, CAM_COLORS, OPENGL, pts3d_to_trimesh, cat_meshes
+
 import trimesh
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -11,6 +13,22 @@ import functools
 import gradio
 
 import matplotlib.pyplot as pl
+from tqdm import tqdm
+
+def load_model(weights, device):
+    return AsymmetricCroCo3DStereo.from_pretrained(weights).to(device)
+
+
+def get_k_idx(idx, out):
+    return {k: v[idx : idx + 1] for k, v in out.items()}
+
+
+def get_pair_output(output, idx):
+    res = []
+    for k in ["view1", "view2", "pred1", "pred2"]:
+        res.append(get_k_idx(idx, output[k]))
+
+    return res
 
 
 def _convert_scene_output_to_glb(
@@ -317,7 +335,7 @@ def clean_pointcloud(
 
     res_confmaps = confmaps.detach().clone()
 
-    for i, pts3d in enumerate(pointmaps):
+    for i, pts3d in tqdm(enumerate(pointmaps), desc="Cleaning pointcloud"):
         for j in range(n_imgs):
             if i == j:
                 continue

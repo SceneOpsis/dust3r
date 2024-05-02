@@ -7,122 +7,20 @@ import os
 from tqdm import tqdm
 
 from dust3r.inference import inference
-from dust3r.model import AsymmetricCroCo3DStereo
 from dust3r.utils.image import load_images, rgb
-from dust3r.post_process import estimate_focal_knowing_depth
-from dust3r.utils.geometry import inv, geotrf
+from dust3r.utils.geometry import geotrf
 from dust3r.utils.device import to_numpy
 
 import sceneopsis.read_write_model as CM
-from sceneopsis.utils import visualize_poses
-from sceneopsis.utils import get_intrinsics, clean_pointcloud
+from sceneopsis.utils import (
+    get_intrinsics,
+    clean_pointcloud,
+    visualize_poses,
+    load_model,
+)
+from sceneopsis.pose_est import compute_poses
 
 from pathlib import Path
-
-
-def load_model(weights, device):
-    return AsymmetricCroCo3DStereo.from_pretrained(weights).to(device)
-
-
-def get_k_idx(idx, out):
-    return {k: v[idx : idx + 1] for k, v in out.items()}
-
-
-def get_pair_output(output, idx):
-    res = []
-    for k in ["view1", "view2", "pred1", "pred2"]:
-        res.append(get_k_idx(idx, output[k]))
-
-    return res
-
-
-def process_pair(view1, view2, pred1, pred2, min_conf_thr=3):
-    # compute camera params from raw input
-    # expecting one pair of images i_j
-    pair = f"{view1['idx'][0]}_{view2['idx'][0]}"
-    conf = float(pred1["conf"][0].mean() * pred2["conf"][0].mean())
-
-    print(f"Solving camera pose for pair {pair} conf {conf:.3f}")
-
-    H, W = view1["true_shape"][0].numpy()
-    pts3d_cam0 = pred1["pts3d"][0]  # 3D points predicted for first camera
-    pp = np.array([W / 2, H / 2])
-
-    # estimate_focal_knowing_depth requires a torch tensor
-    # pts3d_cam0 is already a tensor
-    pp_t = torch.tensor(pp, requires_grad=False)
-
-    focal = float(
-        estimate_focal_knowing_depth(pts3d_cam0[None], pp_t, focal_mode="weiszfeld")
-    )
-    pixels = np.mgrid[:W, :H].T.astype(np.float32)
-
-    pts3d_cam1 = pred2["pts3d_in_other_view"][0].numpy()
-    assert pts3d_cam0.shape[:2] == (H, W)
-    conf_cam1 = pred2["conf"][0]
-    mask_cam1 = conf_cam1 > min_conf_thr
-    K = np.float32([(focal, 0, pp[0]), (0, focal, pp[1]), (0, 0, 1)])
-
-    try:
-        res = cv2.solvePnPRansac(
-            pts3d_cam1[mask_cam1],
-            pixels[mask_cam1],
-            K,
-            None,
-            iterationsCount=100,
-            reprojectionError=5,
-            flags=cv2.SOLVEPNP_SQPNP,
-        )
-        success, R, T, inliers = res
-        assert success
-
-        R = cv2.Rodrigues(R)[0]  # world to cam
-        pose = inv(np.r_[np.c_[R, T], [(0, 0, 0, 1)]])  # cam to world
-    except:
-        raise f"Failed to solve camera pose for pair {pair}"
-
-    # TODO Compute confidence for the pair.
-
-    return pose, focal, pp, conf
-
-
-@torch.no_grad()
-def compute_poses(output, min_conf_thr):
-
-    pairs = len(output["view1"]["idx"])
-    relative_poses = []
-    focals = []
-    pps = []
-    confs = []
-
-    absolute_poses = []
-    # first camera is at origin
-    absolute_poses.append(np.eye(4))
-
-    for p_id in range(pairs):
-
-        view1, view2, pred1, pred2 = get_pair_output(output, p_id)
-        pose, focal, pp, conf = process_pair(view1, view2, pred1, pred2, min_conf_thr)
-        print(f"{focal=}, {pp=}, {conf=}")
-        print(pose, type(pose))
-
-        relative_poses.append(pose)
-        focals.append(focal)
-        pps.append(pp)
-        confs.append(conf)
-
-        print(f"ABSOLUTE 0-{len(absolute_poses)}]")
-        cam1_to_world = absolute_poses[-1] @ pose
-        absolute_poses.append(cam1_to_world)
-        print(absolute_poses[-1])
-
-        cam1_world_pts3d = geotrf(cam1_to_world, pred2["pts3d_in_other_view"][0])
-
-    # last cam focal and pp are not caltulated. Lets use the second to last.
-    focals.append(focals[-1])
-    pps.append(pps[-1])
-
-    return relative_poses, focals, pps, absolute_poses
 
 
 def preproc(
@@ -132,15 +30,12 @@ def preproc(
     vis: bool = False,
     colmap_txt: bool = False,
     raw_res: bool = False,
+    skip_poses: bool = False,
     conf_thr: float = 3,
     weights: str = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
 ):
     """
-    Preprocess images of a sequence with dust3r:
-     - Create pairs of images (i, i+1)
-     - Infer pointmaps and confidence maps
-     - Compute camera poses (simple per pair PnPRansac)
-     - Convert to colmap format and save
+    Preprocess images of a sequence with dust3r.
 
     Args:
         in_folder (str): sequence of images
@@ -148,9 +43,16 @@ def preproc(
         vis (bool, optional): visualize the result (will block at the end). Defaults to False.
         colmap_txt (bool, optional): Create txt colmap model files. Defaults to False.
         raw_res (bool, optional): Output in dust3r resolution instead of source image res. Defaults to False.
+        skip_poses (bool, optional): Skip computing poses. Defaults to False.
         conf_thr (float, optional): Dust3r confidence threshold. Defaults to 3.
         weights (str, optional): Dust3r model weights. Defaults to "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth".
     """
+
+    #  - Create pairs of images (i, i+1)
+    #  - Infer pointmaps and confidence maps
+    #  - Optional (if skip_poses is False)
+    #     - Compute camera poses (simple per pair PnPRansac)
+    #     - Convert to colmap format and save
 
     network_input_size = [288, 512]
     batch_size = 8
@@ -193,9 +95,6 @@ def preproc(
         [(pairs[-1][1], pairs[-1][0])], model, device, batch_size=batch_size
     )
 
-    print("Compute poses...")
-    relative_poses, focals, pps, absolute_poses = compute_poses(output, conf_thr)
-
     # Gather pointmaps
     pointmaps = output["pred1"]["pts3d"]
     last_pointmap = last_pair_output["pred1"]["pts3d"]
@@ -228,29 +127,38 @@ def preproc(
     os.makedirs(images_out, exist_ok=True)
 
     # Save dust3r output
-    print("Saving pointmaps and confmaps...")
     # NOTE: Maybe resize to original resolution if not raw_res?
-    for i, (d, c) in enumerate(zip(pointmaps, confmaps)):
+    for i, (d, c, f) in tqdm(
+        enumerate(zip(pointmaps, confmaps, filelist)),
+        desc="Saving pointmaps and confmaps",
+    ):
         d = d.cpu().numpy()
         c = c.cpu().numpy()
-        np.save(os.path.join(pointmaps_out, f"pm_{i:05d}.npy"), d)
-        np.save(os.path.join(pointmaps_out, f"conf_{i:05d}.npy"), c)
+        fname = Path(f).stem
+        np.save(os.path.join(pointmaps_out, f"pm_{fname}.npy"), d)
+        np.save(os.path.join(pointmaps_out, f"conf_{fname}.npy"), c)
 
     # Save color
-    print("Saving color images...")
     if raw_res:
-        for idx, img in enumerate(imgs):
-            assert img["idx"] == idx, "Image idx mismatch"
+        for img, f in tqdm(zip(imgs, filelist), desc="Saving images"):
+            fname = Path(f).stem
             c = rgb(img["img"][0])
             cv2.imwrite(
-                os.path.join(images_out, f"{idx:05d}.png"),
+                os.path.join(images_out, f"{fname}.png"),
                 (c[..., ::-1] * 255).astype(np.uint8),
             )
     else:  # just copy the originals
         import shutil
 
-        for idx, f in enumerate(filelist):
-            shutil.copy(f, os.path.join(images_out, f"{idx:05d}.png"))
+        for f in tqdm(filelist, desc="Copying images"):
+            fname = Path(f).stem
+            shutil.copy(f, os.path.join(images_out, f"{fname}.png"))
+
+    if skip_poses:
+        return
+
+    print("Compute poses...")
+    relative_poses, focals, pps, absolute_poses = compute_poses(output, conf_thr)
 
     print("Creating colmap cameras file...")
     # This is a single camera. Following InstantSplat we get the mean focal length
@@ -356,7 +264,6 @@ def preproc(
         CM.write_images_binary(images, os.path.join(colmap_out, "images.bin"))
 
     if vis:
-
         K = get_intrinsics([raw_focal, raw_focal], raw_principal_point)
         new_confmaps = clean_pointcloud(absolute_poses, K, pointmaps, confmaps)
         point_cloud = []
@@ -393,13 +300,17 @@ def cleanup(
 
     colmap_cameras, colmap_images, _ = CM.read_model(model_path)
 
-    print(f"{len(colmap_images)=}, {len(colmap_cameras)=}")
+    assert len(colmap_cameras) == 1, "Only one camera supported"
 
-    print("Images ", colmap_images[0])
-    print("Camera ", colmap_cameras[0])
+    print(f"{len(colmap_images)=}")
+    colmap_camera = next(iter(colmap_cameras.values()))
+
+    print("Camera ", colmap_camera)
+
+    file_indices = sorted(colmap_images.keys())
+    print("Images ", colmap_images[file_indices[0]])
 
     # load pointmaps and confmaps
-    file_indices = list(range(len(colmap_images)))
     filelist = [colmap_images[i].name for i in file_indices]
     print(f"{filelist=}")
 
@@ -429,7 +340,7 @@ def cleanup(
     # scale camera intrinsics to dust3r resolution
     image_size = frames[0].shape[:2]
     pointmaps_size = pointmaps[0].shape[:2]
-    calib_size = [colmap_cameras[0].height, colmap_cameras[0].width]
+    calib_size = [colmap_camera.height, colmap_camera.width]
 
     assert (
         image_size[0] / image_size[1]
@@ -444,8 +355,8 @@ def cleanup(
     # Coordinates of the center of the top-left pixels are by default:
     # - (0.5, 0.5) in Colmap
     # - (0,0) in OpenCV
-    pp = (np.array(colmap_cameras[0].params[2:4]) - 0.5) * scale
-    focal = np.array(colmap_cameras[0].params[0:2]) * scale
+    pp = (np.array(colmap_camera.params[2:4]) - 0.5) * scale
+    focal = np.array(colmap_camera.params[0:2]) * scale
 
     print(f"Scaled Intrinsics: {focal=}, {pp=}")
 
@@ -510,14 +421,3 @@ def cleanup(
 
 if __name__ == "__main__":
     run(preproc, cleanup, description="Dust3r (pre)processing scripts")
-
-
-# %%
-import numpy as np
-
-b = 20
-a = [1, 2]
-
-f = np.array([a])[::new, :]
-
-# %%
