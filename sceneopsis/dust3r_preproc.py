@@ -130,11 +130,27 @@ def preproc(
     out_folder: str,
     *,
     vis: bool = False,
-    colmap_bin: bool = False,
+    colmap_txt: bool = False,
     raw_res: bool = False,
     conf_thr: float = 3,
     weights: str = "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
 ):
+    """
+    Preprocess images of a sequence with dust3r:
+     - Create pairs of images (i, i+1)
+     - Infer pointmaps and confidence maps
+     - Compute camera poses (simple per pair PnPRansac)
+     - Convert to colmap format and save
+
+    Args:
+        in_folder (str): sequence of images
+        out_folder (str): colmap output folder
+        vis (bool, optional): visualize the result (will block at the end). Defaults to False.
+        colmap_txt (bool, optional): Create txt colmap model files. Defaults to False.
+        raw_res (bool, optional): Output in dust3r resolution instead of source image res. Defaults to False.
+        conf_thr (float, optional): Dust3r confidence threshold. Defaults to 3.
+        weights (str, optional): Dust3r model weights. Defaults to "checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth".
+    """
 
     network_input_size = [288, 512]
     batch_size = 8
@@ -243,6 +259,9 @@ def preproc(
     raw_height, raw_width = imgs[0]["true_shape"].flatten()
 
     if not raw_res:
+        print(
+            f"Dust3r camera params: {raw_focal=}, {raw_principal_point=}, {raw_height=}, {raw_width=}"
+        )
         ratio = original_res[0] / network_input_size[0]
         focal = raw_focal * ratio
         principal_point = np.array(raw_principal_point) * ratio
@@ -282,10 +301,10 @@ def preproc(
         )
     }
 
-    if colmap_bin:
-        CM.write_cameras_binary(cameras, os.path.join(colmap_out, "cameras.bin"))
-    else:
+    if colmap_txt:
         CM.write_cameras_text(cameras, os.path.join(colmap_out, "cameras.txt"))
+    else:
+        CM.write_cameras_binary(cameras, os.path.join(colmap_out, "cameras.bin"))
 
     # Create points3D.txt
     print("Creating colmap points3D file...")
@@ -307,10 +326,10 @@ def preproc(
             point2D_idxs=np.array([]),
         )
 
-    if colmap_bin:
-        CM.write_points3D_binary(points3d, os.path.join(colmap_out, "points3D.bin"))
-    else:
+    if colmap_txt:
         CM.write_points3D_text(points3d, os.path.join(colmap_out, "points3D.txt"))
+    else:
+        CM.write_points3D_binary(points3d, os.path.join(colmap_out, "points3D.bin"))
 
     # Create images.txt
     print("Creating colmap images file...")
@@ -331,10 +350,10 @@ def preproc(
             point3D_ids=np.array([]),
         )
 
-    if colmap_bin:
-        CM.write_images_binary(images, os.path.join(colmap_out, "images.bin"))
-    else:
+    if colmap_txt:
         CM.write_images_text(images, os.path.join(colmap_out, "images.txt"))
+    else:
+        CM.write_images_binary(images, os.path.join(colmap_out, "images.bin"))
 
     if vis:
 
@@ -403,7 +422,9 @@ def cleanup(
         qvec = colmap_images[i].qvec
         tvec = colmap_images[i].tvec
         R = CM.qvec2rotmat(qvec)
-        cam2world_poses.append(np.r_[np.c_[R, tvec], [(0, 0, 0, 1)]])
+        world2cam = np.r_[np.c_[R, tvec], [(0, 0, 0, 1)]]
+        cam2world = np.linalg.inv(world2cam)
+        cam2world_poses.append(cam2world)
 
     # scale camera intrinsics to dust3r resolution
     image_size = frames[0].shape[:2]
@@ -451,7 +472,7 @@ def cleanup(
         pc = points[mask]
         pc_world = geotrf(cam, pc)
         point_cloud.append(pc_world)
-        colors.append(col[mask])
+        colors.append(col[mask][:, ::-1])  # BGR to RGB
 
     # save new pointcloud in points3D.txt
 
@@ -459,7 +480,9 @@ def cleanup(
     print("Creating colmap points3D file...")
     # just store the pointcloud of the first frame for reference
     pts = np.vstack(point_cloud)
-    col = (np.vstack(colors) * 255).astype(np.uint8)
+    col = np.vstack(colors)
+
+    print("Col is ", col.shape, " type ", col.dtype)
 
     points3d = {}
     for idx, (pt, c) in tqdm(
@@ -487,10 +510,6 @@ def cleanup(
 
 if __name__ == "__main__":
     run(preproc, cleanup, description="Dust3r (pre)processing scripts")
-    # TODOs
-    # Create script that loads colmap poses and dust3r output and runs clean_pointcloud
-    #     - Refined poses and intrinsics should be considered (i.e undistort pointmaps?)
-    #     - Save point cloud in new points3D.txt file --> use it as initial population for 3dgs.
 
 
 # %%
