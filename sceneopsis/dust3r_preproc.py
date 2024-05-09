@@ -154,7 +154,9 @@ def preproc(
             fname = Path(f).stem
             shutil.copy(f, os.path.join(images_out, f"{fname}.png"))
 
+    print("Done with dust3r inference.")
     if skip_poses:
+        print("Skipping poses computation.")
         return
 
     print("Compute poses...")
@@ -289,6 +291,11 @@ def cleanup(
     conf_thr: float = 3,
     vis: bool = False,
 ):
+    """
+    Load dust3r output and colmap poses. Clean the pointmaps by projecting the depth from each camera to
+    all other cameras and removing points with low confidence (follows dust3r cleanup method).
+
+    """
     # Load colmap poses and dust3r output
     model_path = Path(colmap_dir) / "sparse" / "0"
     images_path = Path(colmap_dir) / "images"
@@ -417,6 +424,8 @@ def cleanup(
     if vis:
         focals = np.repeat(np.array(focal)[np.newaxis, :], len(cam2world_poses), axis=0)
         visualize_poses(cam2world_poses, focals, point_cloud, colors, server_port=7860)
+
+
 
 
 if __name__ == "__main__":
