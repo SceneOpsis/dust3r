@@ -36,7 +36,7 @@ def colmap2depth(
     assert recon_dir.exists(), "Colmap dir must contain a model in sparse/0"
     input_images_dir = colmap_dir / "images"
 
-    output_dir = colmap_dir / "depth"
+    output_dir = colmap_dir / "sparse_depth"
     if output_dir.exists():
         print("Warning: output directory already exists, overwriting...")
     else:
